@@ -76,6 +76,24 @@ export async function hasAudioStream(file: string): Promise<boolean> {
   return out.trim().length > 0;
 }
 
+/**
+ * Whether this ffmpeg build has the `subtitles` filter (needs libass at compile
+ * time). Some builds — notably Homebrew's default ffmpeg — ship WITHOUT libass,
+ * so burning subtitles would crash the whole render. We probe once and let the
+ * caller degrade gracefully (render without subs + a loud warning) instead.
+ */
+let _subtitlesFilter: boolean | null = null;
+export async function hasSubtitlesFilter(): Promise<boolean> {
+  if (_subtitlesFilter !== null) return _subtitlesFilter;
+  try {
+    const out = await runBin(ffmpegBin(), ["-hide_banner", "-filters"], 30_000);
+    _subtitlesFilter = /(^|\s)subtitles\b/m.test(out);
+  } catch {
+    _subtitlesFilter = false;
+  }
+  return _subtitlesFilter;
+}
+
 export interface BaseAssets {
   dot: string;
   ember: string;

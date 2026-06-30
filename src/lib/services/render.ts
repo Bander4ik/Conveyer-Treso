@@ -4,10 +4,11 @@ import { getBool, getNumber } from "../settings";
 import { log } from "../logger";
 import { checkCancelled } from "../cancellation";
 import { pLimit } from "../plimit";
-import { ensureBaseAssets, runFfmpeg, type BaseAssets } from "./ffmpeg";
+import { ensureBaseAssets, hasSubtitlesFilter, runFfmpeg, type BaseAssets } from "./ffmpeg";
 import { buildAss, escapeSubtitlePath, sliceCues, type SubtitleCue } from "./subtitles";
 import { ensureDir } from "../paths";
 import type { Scene } from "./scenes";
+import type { VisualAsset } from "./visuals";
 
 /* ── deterministic particle field ───────────────────────────────────────────
  * One fixed table (seeded PRNG) shared by every segment. Motion expressions
@@ -62,7 +63,8 @@ export interface RenderOptions {
   durationSec: number;
   /** subtitle cues for THIS clip, already offset to clip-local time */
   cues?: SubtitleCue[];
-  imagePath: string | null;
+  /** the scene's resolved visual (still → Ken Burns; video → clip base); null → dark ambient */
+  asset: VisualAsset | null;
   /** sum of durations of all previous scenes — keeps FX phase continuous */
   startOffsetSec: number;
   outFile: string;
@@ -73,6 +75,8 @@ export interface RenderOptions {
   /** pre-rendered FX overlay loop (particles + glow); null = no FX */
   fxLoopPath: string | null;
   fxLoopSec: number;
+  /** whether this ffmpeg build can burn subtitles (has the libass filter) */
+  subtitlesAvailable: boolean;
 }
 
 function f3(n: number): string {
@@ -88,10 +92,13 @@ function f3(n: number): string {
  *   + subtle candle-like brightness flicker
  */
 export async function renderSegmentClip(opts: RenderOptions): Promise<void> {
-  const { runId, sceneIndex, durationSec, cues, imagePath, startOffsetSec, outFile, width, height, fps, assets, fxLoopPath, fxLoopSec } = opts;
+  const { runId, sceneIndex, durationSec, cues, asset, startOffsetSec, outFile, width, height, fps, assets, fxLoopPath, fxLoopSec, subtitlesAvailable } = opts;
   const dur = durationSec;
   const frames = Math.max(2, Math.round(dur * fps));
   const off = startOffsetSec;
+  const isVideo = asset?.kind === "video";
+  const isStill = asset?.kind === "still";
+  const contentPath = asset?.path ?? null;
 
   const zoomAmount = getNumber("ZOOM_AMOUNT", 0.12);
   const hold = getNumber("IMAGE_HOLD_SECONDS", 30);
@@ -104,13 +111,13 @@ export async function renderSegmentClip(opts: RenderOptions): Promise<void> {
   const args: string[] = [];
   const filters: string[] = [];
 
-  let imageInput = -1;
+  let contentInput = -1;
   let fxInput = -1;
   let nextInput = 0;
 
-  if (imagePath) {
-    imageInput = nextInput++;
-    args.push("-i", imagePath);
+  if (contentPath) {
+    contentInput = nextInput++;
+    args.push("-i", contentPath); // still image (fed to zoompan) or video clip
   }
   // dark backdrop: looped still for the whole clip
   const bgInput = nextInput++;
@@ -128,9 +135,10 @@ export async function renderSegmentClip(opts: RenderOptions): Promise<void> {
   // ── backdrop ──
   filters.push(`[${bgInput}:v]scale=${width}:${height},setsar=1[bg]`);
 
-  // ── image layer with Ken Burns + alpha fades ──
+  // ── content layer over the backdrop, with alpha fades so cuts stay dark ──
   let composed = "bg";
-  if (imagePath) {
+  if (isStill && contentInput >= 0) {
+    // AI / stock STILL → slow Ken Burns zoom
     const zoomIn = sceneIndex % 2 === 0;
     const zExpr = zoomIn
       ? `1+${zoomAmount.toFixed(4)}*on/${frames}`
@@ -143,13 +151,29 @@ export async function renderSegmentClip(opts: RenderOptions): Promise<void> {
     filters.push(
       // only ~1.35x upscale is needed (zoom max ≈ 1.12) — scaling to 2x was
       // wasted pixels and a big chunk of the per-frame cost
-      `[${imageInput}:v]scale=${Math.round((width * 1.35) / 2) * 2}:-2:flags=lanczos,` +
+      `[${contentInput}:v]scale=${Math.round((width * 1.35) / 2) * 2}:-2:flags=lanczos,` +
         `zoompan=z='${zExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${width}x${height}:fps=${fps},` +
         `format=rgba,` +
         `fade=t=in:st=0:d=${f3(fadeIn)}:alpha=1,` +
         `fade=t=out:st=${f3(foStart)}:d=${f3(foDur)}:alpha=1[img]`
     );
     filters.push(`[bg][img]overlay=0:0[withimg]`);
+    composed = "withimg";
+  } else if (isVideo && contentInput >= 0) {
+    // AI / stock VIDEO clip → fill the frame, trim to the scene length (a clip
+    // shorter than the scene holds its last frame for the small remainder via
+    // tpad — no stretch, no replay-loop). Vignette + the palette FX overlay
+    // below keep it inside the mystical look.
+    const foStart = Math.max(fadeIn + 0.2, dur - edgeFade);
+    filters.push(
+      `[${contentInput}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=${fps},` +
+        `tpad=stop_mode=clone:stop_duration=${f3(dur)},` +
+        `vignette=PI/4,` +
+        `format=rgba,` +
+        `fade=t=in:st=0:d=${f3(fadeIn)}:alpha=1,` +
+        `fade=t=out:st=${f3(foStart)}:d=${f3(edgeFade)}:alpha=1[vid]`
+    );
+    filters.push(`[bg][vid]overlay=0:0[withimg]`);
     composed = "withimg";
   }
 
@@ -177,7 +201,7 @@ export async function renderSegmentClip(opts: RenderOptions): Promise<void> {
 
   // ── burned subtitles (speech-aligned cues — empty during narrator pauses) ──
   let finalLabel = "vout";
-  if (getBool("SUBTITLES_ENABLED") && (cues?.length ?? 0) > 0) {
+  if (getBool("SUBTITLES_ENABLED") && subtitlesAvailable && (cues?.length ?? 0) > 0) {
     const assPath = outFile.replace(/\.mp4$/i, ".ass");
     fs.writeFileSync(assPath, buildAss(cues!, dur), "utf8");
     filters.push(`[vout]subtitles='${escapeSubtitlePath(assPath)}'[vsub]`);
@@ -321,7 +345,7 @@ export async function renderAllScenes(
   runDirPath: string,
   scenes: Scene[],
   globalCues: SubtitleCue[],
-  images: Map<number, string>,
+  visuals: Map<number, VisualAsset>,
   width: number,
   height: number,
   fps: number
@@ -330,6 +354,20 @@ export async function renderAllScenes(
   const assets = await ensureBaseAssets(width, height);
   const fxLoop = await prerenderFxLoop(runId, runDirPath, assets, width, height, fps);
   checkCancelled(runId);
+
+  // Probe once whether this ffmpeg can burn subtitles (needs libass). Degrade
+  // gracefully instead of crashing every clip when the filter is missing.
+  const subsOn = getBool("SUBTITLES_ENABLED");
+  const subtitlesAvailable = subsOn ? await hasSubtitlesFilter() : false;
+  if (subsOn && !subtitlesAvailable) {
+    log(
+      runId,
+      "warn",
+      "This ffmpeg has no `subtitles` filter (built without libass) — subtitles will NOT be burned in. Install an ffmpeg with libass (or set FFMPEG_PATH to a full build) to enable them.",
+      "render"
+    );
+  }
+
   const concurrency = Math.max(1, Math.round(getNumber("RENDER_CONCURRENCY", 2)));
   const limit = pLimit(concurrency);
 
@@ -347,7 +385,7 @@ export async function renderAllScenes(
           durationSec: dur,
           // cues are sliced from the global timeline and offset to clip-local time
           cues: sliceCues(globalCues, scene.startSec, scene.endSec),
-          imagePath: images.get(scene.index) ?? null,
+          asset: visuals.get(scene.index) ?? null,
           // FX phase stays continuous across cuts: offset = scene's start in the video
           startOffsetSec: scene.startSec,
           outFile: file,
@@ -357,6 +395,7 @@ export async function renderAllScenes(
           assets,
           fxLoopPath: fxLoop?.path ?? null,
           fxLoopSec: fxLoop?.loopSec ?? 0,
+          subtitlesAvailable,
         });
         clips[i] = { index: scene.index, file, durationSec: dur };
         done++;

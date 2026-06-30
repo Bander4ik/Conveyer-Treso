@@ -1,6 +1,7 @@
 import fs from "fs";
 import { getNumber, getSetting } from "../settings";
 import { CancelledError, isCancelled } from "../cancellation";
+import { runFfmpeg } from "./ffmpeg";
 
 function checkAbort(runId?: string): void {
   if (runId && isCancelled(runId)) throw new CancelledError();
@@ -326,6 +327,160 @@ export async function imageToFile(prompt: string, outFile: string): Promise<void
     }
   }
   throw new Error(`GenAIPro image: task ${taskId} timed out after 10 min`);
+}
+
+/* ── video (Veo frames-to-video: animate a still image into a short clip) ── */
+
+/** True if a Veo task still exists and is processing/completed (for Resume). */
+async function veoTaskIsLive(taskId: string): Promise<boolean> {
+  try {
+    const resp = await gapFetch(`/v2/veo/tasks/${encodeURIComponent(taskId)}`);
+    if (!resp.ok) return false;
+    const t = (await resp.json()) as VeoTask;
+    return t.status === "processing" || t.status === "completed";
+  } catch {
+    return false;
+  }
+}
+
+async function pollVeoVideo(taskId: string, outFile: string, runId?: string): Promise<void> {
+  // Successful i2v gens finish in ~1-2 min; cap at 5 so a slow/overloaded
+  // genaipro backend falls back to an AI-image still quickly instead of stalling
+  // the whole run (genaipro itself self-times-out a stuck job around ~2-3 min).
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    checkAbort(runId);
+    await sleep(6000); // gentle — Veo endpoints share the 30 req/min budget
+    const resp = await gapFetch(`/v2/veo/tasks/${encodeURIComponent(taskId)}`);
+    if (resp.status === 429) {
+      await sleep(20_000);
+      continue;
+    }
+    if (!resp.ok) throw new Error(`GenAIPro video poll ${resp.status}: ${await errText(resp)}`);
+    const task = (await resp.json()) as VeoTask;
+    if (task.status === "completed") {
+      const url = task.file_urls?.[0];
+      if (!url) throw new Error("GenAIPro video: completed but no file URL");
+      await downloadToFile(url, outFile);
+      return;
+    }
+    if (task.status === "failed") {
+      throw new Error(`GenAIPro video failed: ${task.error || "unknown error"} (credits auto-refunded)`);
+    }
+    // "processing" → keep polling
+  }
+  throw new Error(`GenAIPro video: task ${taskId} timed out after 20 min — press Retry to pick up the finished clip`);
+}
+
+/**
+ * Animate a START IMAGE into a short video clip via genaipro Veo frames-to-video.
+ * The API exposes NO duration parameter — the clip returns at the model's own
+ * fixed length (~8s for Veo). The CALLER measures the real length (ffprobe) and
+ * cuts the scene to match it; we never stretch/freeze to fill a longer scene.
+ *
+ * Resumable: the task id is persisted to taskIdFile the moment it is created, so
+ * a Retry re-polls the SAME task instead of paying for a new one.
+ */
+export async function framesToVideoFile(
+  startImage: string,
+  prompt: string,
+  outFile: string,
+  opts: { runId?: string; taskIdFile?: string } = {}
+): Promise<void> {
+  const { runId, taskIdFile } = opts;
+  const aspect =
+    (getSetting("STOCK_ORIENTATION") || "landscape").toLowerCase() === "portrait"
+      ? "VIDEO_ASPECT_RATIO_PORTRAIT"
+      : "VIDEO_ASPECT_RATIO_LANDSCAPE";
+
+  checkAbort(runId);
+
+  // Veo i2v reliably FAILS the generation job on some raw provider images — e.g.
+  // nano_banana returns JPEG bytes that get saved as `.png`, full-range/odd-size
+  // quirks. Re-encoding the start frame to a clean, standard JPEG first makes it
+  // succeed (verified: same image + same prompt fails raw, passes re-encoded).
+  const startJpeg = `${outFile}.startframe.jpg`;
+  await runFfmpeg([
+    "-i", startImage,
+    "-vf", "scale='min(1920,iw)':-2:flags=lanczos,format=yuvj420p",
+    "-q:v", "3", "-y", startJpeg,
+  ]);
+  const buf = fs.readFileSync(startJpeg);
+
+  const submit = async (): Promise<string> => {
+    let lastErr = "";
+    for (let attempt = 0; attempt <= 4; attempt++) {
+      checkAbort(runId);
+      const form = new FormData();
+      form.append("start_image", new Blob([new Uint8Array(buf)], { type: "image/jpeg" }), "start.jpg");
+      form.append("prompt", prompt);
+      form.append("aspect_ratio", aspect);
+      form.append("number_of_videos", "1"); // sent as string in form data per spec
+      const resp = await gapFetch("/v2/veo/frames-to-video", { method: "POST", body: form }, 120_000);
+      if (resp.ok) {
+        const json = (await resp.json()) as { histories?: VeoTask[]; id?: string };
+        const id = json.histories?.[0]?.id ?? json.id;
+        if (!id) throw new Error("GenAIPro video: response without task id");
+        return id;
+      }
+      lastErr = `GenAIPro frames-to-video ${resp.status}: ${await errText(resp)}`;
+      if (![429, 500, 502, 503, 504].includes(resp.status) || attempt === 4) throw new Error(lastErr);
+      await sleep((resp.status === 429 ? 20_000 : 3000) * (attempt + 1));
+    }
+    throw new Error(lastErr);
+  };
+
+  try {
+    // A FAILED Veo job auto-refunds the credit, and i2v is inherently flaky, so
+    // retry a fresh generation once before giving up (the caller then falls back
+    // to an AI-image still).
+    const GEN_ATTEMPTS = 2;
+    let lastErr: Error | null = null;
+    for (let gen = 1; gen <= GEN_ATTEMPTS; gen++) {
+      let taskId = "";
+      // RESUME an in-flight task from a previous run (no re-charge) — only on the
+      // first attempt, and only if it's still alive (a FAILED task is skipped).
+      if (gen === 1 && taskIdFile) {
+        const prior = readTaskId(taskIdFile);
+        if (prior && (await veoTaskIsLive(prior))) taskId = prior;
+      }
+      if (!taskId) {
+        taskId = await submit();
+        if (taskIdFile) {
+          try {
+            fs.writeFileSync(taskIdFile, taskId, "utf8");
+          } catch {
+            // persistence is best-effort; the task still works this run
+          }
+        }
+      }
+      try {
+        await pollVeoVideo(taskId, outFile, runId);
+        return; // success
+      } catch (e) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        // retry only a genuine generation FAILURE (not cancel/timeout)
+        if (gen < GEN_ATTEMPTS && /failed/i.test(lastErr.message)) {
+          if (taskIdFile) {
+            try {
+              fs.rmSync(taskIdFile, { force: true });
+            } catch {
+              // best-effort
+            }
+          }
+          continue;
+        }
+        throw lastErr;
+      }
+    }
+    throw lastErr ?? new Error("GenAIPro video: generation failed");
+  } finally {
+    try {
+      fs.rmSync(startJpeg, { force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
 }
 
 /* ── helpers ── */

@@ -7,6 +7,8 @@ export const SETTING_KEYS = [
   "GOOGLE_API_KEY",
   "GENAIPRO_API_KEY",
   "ELEVENLABS_API_KEY",
+  "PEXELS_API_KEY",
+  "PIXABAY_API_KEY",
   // ── Models ──
   "TEXT_MODEL",
   "IMAGE_MODEL",
@@ -24,6 +26,27 @@ export const SETTING_KEYS = [
   "IMAGE_STYLE_SUFFIX",
   "MAX_UNIQUE_IMAGES",
   "IMAGE_CONCURRENCY",
+  // ── Mixed media (stock footage + AI video, interspersed with AI images) ──
+  "VISUAL_MIX_ENABLED", // "true" → mix sources by the ratio below; "false" → all AI images (original behaviour)
+  "MIX_AI_IMAGE_PCT",
+  "MIX_AI_VIDEO_PCT",
+  "MIX_STOCK_VIDEO_PCT",
+  "MIX_STOCK_IMAGE_PCT",
+  "MAX_UNIQUE_AI_VIDEOS",
+  "MAX_UNIQUE_STOCK_VIDEOS",
+  "MAX_UNIQUE_STOCK_IMAGES",
+  // ── AI video (genaipro Veo frames-to-video: animate an AI image) ──
+  "AI_VIDEO_SCENE_SEC", // target length of an AI-video scene (≈ the Veo clip's own length; no stretch/freeze)
+  "AI_VIDEO_MOTION_PROMPT",
+  "VIDEO_CONCURRENCY",
+  // ── Stock footage providers + relevance ──
+  "FOOTAGE_SOURCES", // comma list: pexels,openverse,wikimedia,archive,pixabay
+  "STOCK_ORIENTATION", // landscape | portrait | square
+  "STOCK_MAX_HEIGHT",
+  "STOCK_MIN_DURATION",
+  "REAL_MATCH_THRESHOLD", // 0–100 vision relevance bar; cascades down — keep modest (NOT 85)
+  "VISION_MATCH_MODEL",
+  "STOCK_CONCURRENCY",
   // ── Voice ──
   "VOICE_MODE", // "genaipro" | "manual" | "elevenlabs"
   "GENAIPRO_VOICE_ID",
@@ -99,16 +122,23 @@ export const DEFAULT_SCENE_DESCRIBE_PROMPT = `You write image prompts for a face
 
 You receive a JSON array of narration scenes, each: {"index": number, "text": "<the exact narration spoken during this scene>"}.
 
-For EACH scene, write ONE image prompt that VISUALLY MATCHES that scene's narration — take its key idea, subject or metaphor and express it through this visual world: ancient ornate grimoires and spellbooks, glowing runes and sigils, magic circles, candlelight, golden energy, cosmic light, old libraries, hourglasses, keys, scrolls, hands holding glowing objects, starry skies, temples. Someone watching with the narration must feel the picture is about the same thing.
+For EACH scene return TWO things:
 
-Each prompt: 40-80 words, ENGLISH, no text or letters in the image, no real people's faces, no modern objects, epic cinematic composition with a clear central subject and deep shadows.
+1. "visual_prompt": ONE image prompt that VISUALLY MATCHES that scene's narration — take its key idea, subject or metaphor and express it through this visual world: ancient ornate grimoires and spellbooks, glowing runes and sigils, magic circles, candlelight, golden energy, cosmic light, old libraries, hourglasses, keys, scrolls, hands holding glowing objects, starry skies, temples. Someone watching with the narration must feel the picture is about the same thing. 40-80 words, ENGLISH, no text or letters in the image, no real people's faces, no modern objects, epic cinematic composition with a clear central subject and deep shadows.
 
-Return STRICTLY a valid JSON array of objects {"index": number, "visual_prompt": "..."} with one entry per input scene, same indexes — no markdown, no commentary.`;
+2. "real_query": a SHORT (2-5 words) plain real-world search phrase for finding matching STOCK FOOTAGE/PHOTO in libraries like Pexels. Use concrete, filmable nouns a stock site would actually have — e.g. "lit candles dark", "golden sunrise mountains", "old book pages", "starry night sky", "ocean waves sunset", "glowing embers fire". NO mystical/abstract words ("manifestation", "energy", "aura"), NO text, NO named people. Pick the most literal visual in the scene.
+
+Return STRICTLY a valid JSON array of objects {"index": number, "visual_prompt": "...", "real_query": "..."} with one entry per input scene, same indexes — no markdown, no commentary.`;
+
+export const DEFAULT_AI_VIDEO_MOTION_PROMPT =
+  "Gently bring this image to life: a very slow camera push-in with soft drifting embers and faint flickering candlelight. Keep the composition, subject and mood unchanged.";
 
 export const DEFAULTS: Record<SettingKey, string> = {
   GOOGLE_API_KEY: "",
   GENAIPRO_API_KEY: "",
   ELEVENLABS_API_KEY: "",
+  PEXELS_API_KEY: "",
+  PIXABAY_API_KEY: "",
   TEXT_MODEL: "gemini-flash-latest",
   IMAGE_MODEL: "gemini-2.5-flash-image",
   SCENE_MIN_SEC: "12",
@@ -122,6 +152,27 @@ export const DEFAULTS: Record<SettingKey, string> = {
   IMAGE_STYLE_SUFFIX: DEFAULT_IMAGE_STYLE_SUFFIX,
   MAX_UNIQUE_IMAGES: "60",
   IMAGE_CONCURRENCY: "2",
+  // ── Mixed media ──
+  VISUAL_MIX_ENABLED: "true",
+  MIX_AI_IMAGE_PCT: "30",
+  MIX_AI_VIDEO_PCT: "20",
+  MIX_STOCK_VIDEO_PCT: "25",
+  MIX_STOCK_IMAGE_PCT: "25",
+  MAX_UNIQUE_AI_VIDEOS: "12",
+  MAX_UNIQUE_STOCK_VIDEOS: "15",
+  MAX_UNIQUE_STOCK_IMAGES: "15",
+  // ── AI video ──
+  AI_VIDEO_SCENE_SEC: "8",
+  AI_VIDEO_MOTION_PROMPT: DEFAULT_AI_VIDEO_MOTION_PROMPT,
+  VIDEO_CONCURRENCY: "1",
+  // ── Stock footage ──
+  FOOTAGE_SOURCES: "pexels,openverse,wikimedia,archive",
+  STOCK_ORIENTATION: "landscape",
+  STOCK_MAX_HEIGHT: "1080",
+  STOCK_MIN_DURATION: "4",
+  REAL_MATCH_THRESHOLD: "55",
+  VISION_MATCH_MODEL: "",
+  STOCK_CONCURRENCY: "2",
   VOICE_MODE: "genaipro",
   GENAIPRO_VOICE_ID: "",
   GENAIPRO_TTS_MODEL: "eleven_multilingual_v2",
