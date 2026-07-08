@@ -26,6 +26,7 @@ export const SETTING_KEYS = [
   "IMAGE_STYLE_SUFFIX",
   "MAX_UNIQUE_IMAGES",
   "IMAGE_CONCURRENCY",
+  "IMAGE_TASK_TIMEOUT_MIN",
   // ── Mixed media (stock footage + AI video, interspersed with AI images) ──
   "VISUAL_MIX_ENABLED", // "true" → mix sources by the ratio below; "false" → all AI images (original behaviour)
   "MIX_AI_IMAGE_PCT",
@@ -152,6 +153,7 @@ export const DEFAULTS: Record<SettingKey, string> = {
   IMAGE_STYLE_SUFFIX: DEFAULT_IMAGE_STYLE_SUFFIX,
   MAX_UNIQUE_IMAGES: "60",
   IMAGE_CONCURRENCY: "2",
+  IMAGE_TASK_TIMEOUT_MIN: "15",
   // ── Mixed media ──
   VISUAL_MIX_ENABLED: "true",
   MIX_AI_IMAGE_PCT: "30",

@@ -78,7 +78,8 @@ export async function generateAiImagePool(
           let file: string;
           if (provider === "genaipro") {
             file = path.join(imagesDir, `${pp.stem}.png`);
-            await genaiproImage(pp.prompt, file);
+            // persist the task id so a slow/timed-out image is recovered on Retry
+            await genaiproImage(pp.prompt, file, { runId, taskIdFile: path.join(imagesDir, `${pp.stem}.task`) });
           } else {
             const { bytes, mimeType } = await geminiImage(pp.prompt);
             const ext = mimeType.includes("jpeg") ? "jpg" : "png";

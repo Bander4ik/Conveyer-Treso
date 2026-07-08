@@ -282,32 +282,62 @@ interface VeoTask {
   error?: string;
 }
 
-export async function imageToFile(prompt: string, outFile: string): Promise<void> {
+export async function imageToFile(
+  prompt: string,
+  outFile: string,
+  opts: { runId?: string; taskIdFile?: string } = {}
+): Promise<void> {
+  const { runId, taskIdFile } = opts;
   const model = getSetting("GENAIPRO_IMAGE_MODEL") || "nano_banana_pro";
+  checkAbort(runId);
 
+  // RESUME a create-image task from a previous run: genaipro's Veo image backend
+  // can be slow/overloaded (minutes per image), but it completes server-side, so
+  // re-poll the SAME task instead of creating (and paying for) a new one. This is
+  // what makes a timed-out image non-fatal — the next Retry picks it up finished.
   let taskId = "";
-  let lastErr = "";
-  for (let attempt = 0; attempt <= 4; attempt++) {
-    const form = new FormData();
-    form.append("prompt", prompt);
-    form.append("aspect_ratio", "IMAGE_ASPECT_RATIO_LANDSCAPE"); // 16:9
-    form.append("number_of_images", "1");
-    form.append("model", model);
-    const resp = await gapFetch("/v2/veo/create-image", { method: "POST", body: form });
-    if (resp.ok) {
-      const json = (await resp.json()) as VeoTask;
-      if (!json.id) throw new Error("GenAIPro image: response without task id");
-      taskId = json.id;
-      break;
-    }
-    lastErr = `GenAIPro image ${resp.status}: ${await errText(resp)}`;
-    // 30 req/min shared limit — back off generously on 429
-    if (![429, 500, 502, 503, 504].includes(resp.status) || attempt === 4) throw new Error(lastErr);
-    await sleep((resp.status === 429 ? 20_000 : 3000) * (attempt + 1));
+  if (taskIdFile) {
+    const prior = readTaskId(taskIdFile);
+    if (prior && (await veoTaskIsLive(prior))) taskId = prior;
   }
 
-  const deadline = Date.now() + 10 * 60 * 1000;
+  if (!taskId) {
+    let lastErr = "";
+    for (let attempt = 0; attempt <= 4; attempt++) {
+      checkAbort(runId);
+      const form = new FormData();
+      form.append("prompt", prompt);
+      form.append("aspect_ratio", "IMAGE_ASPECT_RATIO_LANDSCAPE"); // 16:9
+      form.append("number_of_images", "1");
+      form.append("model", model);
+      const resp = await gapFetch("/v2/veo/create-image", { method: "POST", body: form });
+      if (resp.ok) {
+        const json = (await resp.json()) as VeoTask;
+        if (!json.id) throw new Error("GenAIPro image: response without task id");
+        taskId = json.id;
+        break;
+      }
+      lastErr = `GenAIPro image ${resp.status}: ${await errText(resp)}`;
+      // 30 req/min shared limit — back off generously on 429
+      if (![429, 500, 502, 503, 504].includes(resp.status) || attempt === 4) throw new Error(lastErr);
+      await sleep((resp.status === 429 ? 20_000 : 3000) * (attempt + 1));
+    }
+    if (taskIdFile) {
+      try {
+        fs.writeFileSync(taskIdFile, taskId, "utf8");
+      } catch {
+        // persistence is best-effort; the task still works this run
+      }
+    }
+  }
+
+  // Patient polling — genaipro's image backend can be slow under load. A task
+  // that outlasts the window is NOT lost: its id is persisted, so a Retry
+  // re-polls it (see the resume block above) and downloads the finished image.
+  const timeoutMin = Math.max(2, getNumber("IMAGE_TASK_TIMEOUT_MIN", 15));
+  const deadline = Date.now() + timeoutMin * 60 * 1000;
   while (Date.now() < deadline) {
+    checkAbort(runId);
     await sleep(6000); // gentle polling — image endpoints share the 30 req/min budget
     const resp = await gapFetch(`/v2/veo/tasks/${encodeURIComponent(taskId)}`);
     if (resp.status === 429) {
@@ -326,7 +356,9 @@ export async function imageToFile(prompt: string, outFile: string): Promise<void
       throw new Error(`GenAIPro image failed: ${task.error || "unknown error"} (credits auto-refunded)`);
     }
   }
-  throw new Error(`GenAIPro image: task ${taskId} timed out after 10 min`);
+  throw new Error(
+    `GenAIPro image: task ${taskId} still processing after ${timeoutMin} min — press Retry, it will pick up the finished image`
+  );
 }
 
 /* ── video (Veo frames-to-video: animate a still image into a short clip) ── */

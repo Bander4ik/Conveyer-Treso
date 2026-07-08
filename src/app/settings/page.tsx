@@ -128,6 +128,12 @@ const GROUPS: Group[] = [
       },
       { key: "IMAGE_CONCURRENCY", label: "Parallel image requests", type: "text" },
       {
+        key: "IMAGE_TASK_TIMEOUT_MIN",
+        label: "Max wait per AI image, min",
+        type: "text",
+        hint: "How long to wait for one GenAIPro image before moving on. GenAIPro's image backend can get slow/overloaded; a timed-out image is NOT lost — press Retry and it picks up the finished image without re-paying. Raise this if you see many 'timed out' image warnings.",
+      },
+      {
         key: "IMAGE_STYLE_SUFFIX",
         label: "Style suffix appended to every image prompt",
         type: "textarea",
