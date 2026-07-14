@@ -10,6 +10,13 @@ interface AssetsInfo {
   intro: string | null;
 }
 
+interface Channel {
+  id: string;
+  name: string;
+  voiceId: string;
+  language: string;
+}
+
 // Draft is kept in localStorage so the typed script survives navigating away
 // to another tab and back (the page unmounts on client-side navigation).
 const DRAFT_KEY = "treso:newVideoDraft:v1";
@@ -33,6 +40,8 @@ export default function NewVideoPage() {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [assets, setAssets] = useState<AssetsInfo | null>(null);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   // `loaded` is STATE (not a ref) on purpose: under React Strict Mode the mount
   // effects run twice, and a ref-based guard let the persist effect overwrite
@@ -92,7 +101,20 @@ export default function NewVideoPage() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    fetch("/api/channels")
+      .then((r) => r.json())
+      .then((d) => setChannels(d.channels ?? []))
+      .catch(() => {});
+  }, []);
+
   const words = script.trim().split(/\s+/).filter(Boolean).length;
+
+  function toggleChannel(id: string) {
+    setSelectedChannelIds((ids) =>
+      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]
+    );
+  }
 
   async function uploadVoiceover(file: File) {
     setUploading(true);
@@ -118,14 +140,18 @@ export default function NewVideoPage() {
     setStarting(true);
     setError(null);
     try {
+      // Channels use their own GenAIPro voices, so a multi-language run is
+      // always genaipro voice mode regardless of the single-video selection.
+      const useChannels = selectedChannelIds.length > 0;
       const resp = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title,
           script,
-          voiceMode,
+          voiceMode: useChannels ? "genaipro" : voiceMode,
           voiceoverFile: voiceoverFile ?? undefined,
+          channelIds: useChannels ? selectedChannelIds : undefined,
         }),
       });
       const data = await resp.json();
@@ -239,6 +265,39 @@ export default function NewVideoPage() {
             The script is voiced segment by segment with your ElevenLabs voice. Set the API key and
             Voice ID in Settings first.
           </p>
+        )}
+      </div>
+
+      <div className="card space-y-3">
+        <div className="card-title">Make in these channels (multi-language)</div>
+        {channels.length === 0 ? (
+          <p className="hint">
+            No channels yet.{" "}
+            <a href="/channels" style={{ color: "var(--accent)" }}>
+              Add a channel
+            </a>{" "}
+            to produce this video in multiple languages.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-col gap-2">
+              {channels.map((c) => (
+                <label key={c.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedChannelIds.includes(c.id)}
+                    onChange={() => toggleChannel(c.id)}
+                  />
+                  <span className="font-medium">{c.name}</span>
+                  <span style={{ color: "var(--text-dim)" }}>{c.language}</span>
+                </label>
+              ))}
+            </div>
+            <p className="hint">
+              Leave empty for a single video. Select channels to produce the same video in each
+              language (visuals generated once, reused).
+            </p>
+          </>
         )}
       </div>
 

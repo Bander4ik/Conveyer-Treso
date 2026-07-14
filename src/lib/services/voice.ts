@@ -77,7 +77,8 @@ async function synthChunk(
   mode: "genaipro" | "elevenlabs",
   index: number,
   text: string,
-  wantSubs: boolean
+  wantSubs: boolean,
+  voiceId?: string
 ): Promise<{ wav: string; cues: SubtitleCue[] }> {
   const pad = String(index).padStart(3, "0");
   const wav = path.join(audioDir, `chunk_${pad}.wav`);
@@ -93,7 +94,7 @@ async function synthChunk(
   let cues: SubtitleCue[] = [];
   if (mode === "genaipro") {
     const taskIdFile = path.join(audioDir, `chunk_${pad}.task`);
-    const { taskId } = await genaiproTts(text, mp3, { runId, taskIdFile });
+    const { taskId } = await genaiproTts(text, mp3, { runId, taskIdFile, voiceId });
     if (wantSubs) {
       try {
         const raw = await exportSubtitlesRaw(taskId, runId);
@@ -131,7 +132,8 @@ export async function generateVoiceTimeline(
   runDirPath: string,
   script: string,
   mode: VoiceMode,
-  uploadedVoiceover: string | undefined
+  uploadedVoiceover: string | undefined,
+  opts: { voiceId?: string } = {}
 ): Promise<VoiceTimeline> {
   const cacheFile = path.join(runDirPath, "voice.json");
   const cached = readVoiceCache(cacheFile);
@@ -172,7 +174,7 @@ export async function generateVoiceTimeline(
     chunks.map((text, i) =>
       limit(async () => {
         checkCancelled(runId);
-        const r = await synthChunk(runId, audioDir, mode, i, text, wantSubs);
+        const r = await synthChunk(runId, audioDir, mode, i, text, wantSubs, opts.voiceId);
         voicedCount++;
         if (chunks.length > 1) log(runId, "info", `Voiced chunk ${voicedCount}/${chunks.length}`, "voice");
         return r;

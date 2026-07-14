@@ -118,11 +118,12 @@ interface LabsTask {
 export async function ttsToFile(
   text: string,
   outFile: string,
-  opts: { runId?: string; taskIdFile?: string } = {}
+  opts: { runId?: string; taskIdFile?: string; voiceId?: string } = {}
 ): Promise<{ taskId: string }> {
   const { runId, taskIdFile } = opts;
-  const voiceId = getSetting("GENAIPRO_VOICE_ID");
-  if (!voiceId) throw new Error("GENAIPRO_VOICE_ID is not set (open Settings → GenAIPro)");
+  // per-channel override (multi-language) falls back to the global setting
+  const voiceId = opts.voiceId?.trim() || getSetting("GENAIPRO_VOICE_ID");
+  if (!voiceId) throw new Error("GENAIPRO_VOICE_ID is not set (Settings → GenAIPro, or set a voice on the channel)");
   const model = getSetting("GENAIPRO_TTS_MODEL") || "eleven_multilingual_v2";
 
   const body = JSON.stringify({

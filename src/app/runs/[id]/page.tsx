@@ -11,6 +11,13 @@ interface RunMeta {
   voiceMode: string;
   error?: string;
   outputPath?: string;
+  outputs?: {
+    channelId: string;
+    channelName: string;
+    language: string;
+    path: string;
+    durationSec?: number;
+  }[];
   stats?: { segments?: number; uniqueImages?: number; durationSec?: number };
 }
 
@@ -170,7 +177,32 @@ export default function RunDetailPage() {
         </div>
       )}
 
-      {isDone && (
+      {isDone && run?.outputs && run.outputs.length ? (
+        <div className="card space-y-4">
+          <div className="card-title">Results ({run.outputs.length} videos)</div>
+          {run.outputs.map((o) => {
+            const src = `/api/runs/${id}/file?path=${encodeURIComponent(o.path)}`;
+            return (
+              <div key={o.channelId} className="space-y-2">
+                <div className="text-sm font-medium">
+                  {o.channelName}{" "}
+                  <span style={{ color: "var(--text-dim)" }}>· {o.language}</span>
+                </div>
+                <video
+                  controls
+                  preload="metadata"
+                  className="w-full rounded-lg"
+                  style={{ maxHeight: 420, background: "#000" }}
+                  src={src}
+                />
+                <a className="btn btn-primary" href={src} download>
+                  ⬇ Download {o.channelName}
+                </a>
+              </div>
+            );
+          })}
+        </div>
+      ) : isDone ? (
         <div className="card space-y-4">
           <div className="card-title">Result</div>
           <video
@@ -192,7 +224,7 @@ export default function RunDetailPage() {
             )}
           </div>
         </div>
-      )}
+      ) : null}
 
       <div className="card">
         <div className="flex items-center mb-3">

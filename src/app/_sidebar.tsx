@@ -7,6 +7,7 @@ import clsx from "clsx";
 const LINKS = [
   { href: "/", label: "New Video", icon: "✦" },
   { href: "/runs", label: "Runs", icon: "▤" },
+  { href: "/channels", label: "Channels", icon: "◎" },
   { href: "/settings", label: "Settings", icon: "⚙" },
 ];
 

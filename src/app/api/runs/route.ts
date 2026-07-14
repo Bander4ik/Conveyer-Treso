@@ -14,6 +14,7 @@ export async function POST(req: Request) {
     script?: string;
     voiceMode?: string;
     voiceoverFile?: string;
+    channelIds?: string[];
     smoke?: boolean;
   };
   try {
@@ -50,11 +51,16 @@ export async function POST(req: Request) {
     voiceoverFile = resolved;
   }
 
+  const channelIds = Array.isArray(body.channelIds)
+    ? body.channelIds.filter((c): c is string => typeof c === "string" && c.length > 0)
+    : undefined;
+
   const meta = createRun({
     title: smoke ? "Smoke test (no APIs)" : body.title,
     script: smoke ? "smoke" : script,
     voiceMode,
     voiceoverFile,
+    channelIds, // channels + smoke = a keyless multi-language orchestration check
   });
   startPipeline(meta.id, { smoke });
   return NextResponse.json({ id: meta.id });

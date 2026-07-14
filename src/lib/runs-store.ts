@@ -20,11 +20,23 @@ export interface RunMeta {
   script: string;
   error?: string;
   outputPath?: string;
+  /** multi-language: the channels this run produces a video for */
+  channelIds?: string[];
+  /** multi-language: one finished video per channel */
+  outputs?: RunOutput[];
   stats?: {
     segments?: number;
     uniqueImages?: number;
     durationSec?: number;
   };
+}
+
+export interface RunOutput {
+  channelId: string;
+  channelName: string;
+  language: string;
+  path: string;
+  durationSec?: number;
 }
 
 function metaFile(dir: string): string {
@@ -45,6 +57,7 @@ export function createRun(input: {
   script: string;
   voiceMode: VoiceMode;
   voiceoverFile?: string;
+  channelIds?: string[];
 }): RunMeta {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -57,6 +70,7 @@ export function createRun(input: {
     voiceMode: input.voiceMode,
     voiceoverFile: input.voiceoverFile,
     script: input.script,
+    channelIds: input.channelIds && input.channelIds.length > 0 ? input.channelIds : undefined,
   };
   const dir = getRunDir(id);
   fs.writeFileSync(metaFile(dir), JSON.stringify(meta, null, 2), "utf8");
