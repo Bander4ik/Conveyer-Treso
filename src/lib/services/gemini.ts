@@ -43,18 +43,45 @@ export async function geminiText(
       return await geminiTextOnce(model, systemPrompt, userText, opts);
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e));
-      // auth/key problems fail for every model — no point walking the ladder
-      if (e instanceof GeminiHttpError && [400, 401, 403].includes(e.status)) throw e;
+      // auth/key problems fail for every model — no point walking the ladder.
+      // A 400 is NOT one of those: it is usually per-model (an unsupported
+      // generationConfig field), so keep walking.
+      if (e instanceof GeminiHttpError && [401, 403].includes(e.status)) throw e;
     }
   }
   throw lastErr ?? new Error("Gemini: all models failed");
 }
+
+/** Models that rejected `thinkingConfig` once — never send it to them again.
+ *  Gemini 3.x cannot have thinking disabled: `thinkingBudget: 0` comes back as
+ *  a bare 400 INVALID_ARGUMENT ("Request contains an invalid argument"), which
+ *  reads like a wrong model name but is really this one field. */
+const noThinkingConfig = new Set<string>();
 
 async function geminiTextOnce(
   model: string,
   systemPrompt: string,
   userText: string,
   opts: GeminiTextOptions
+): Promise<string> {
+  try {
+    return await geminiCall(model, systemPrompt, userText, opts, !noThinkingConfig.has(model));
+  } catch (e) {
+    if (e instanceof GeminiHttpError && e.status === 400 && !noThinkingConfig.has(model)) {
+      // retry once without thinkingConfig — that's the usual culprit
+      noThinkingConfig.add(model);
+      return await geminiCall(model, systemPrompt, userText, opts, false);
+    }
+    throw e;
+  }
+}
+
+async function geminiCall(
+  model: string,
+  systemPrompt: string,
+  userText: string,
+  opts: GeminiTextOptions,
+  withThinkingConfig: boolean
 ): Promise<string> {
   const apiKey = getSetting("GOOGLE_API_KEY");
   if (!apiKey) throw new Error("GOOGLE_API_KEY is not set (open Settings)");
@@ -67,7 +94,7 @@ async function geminiTextOnce(
       ...(opts.json !== false ? { responseMimeType: "application/json" } : {}),
       temperature: opts.temperature ?? 0.7,
       maxOutputTokens: opts.maxOutputTokens ?? 65535,
-      thinkingConfig: { thinkingBudget: 0 },
+      ...(withThinkingConfig ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
     },
   });
 
