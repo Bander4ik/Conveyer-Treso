@@ -377,10 +377,14 @@ async function veoTaskIsLive(taskId: string): Promise<boolean> {
 }
 
 async function pollVeoVideo(taskId: string, outFile: string, runId?: string): Promise<void> {
-  // Successful i2v gens finish in ~1-2 min; cap at 5 so a slow/overloaded
-  // genaipro backend falls back to an AI-image still quickly instead of stalling
-  // the whole run (genaipro itself self-times-out a stuck job around ~2-3 min).
-  const deadline = Date.now() + 5 * 60 * 1000;
+  // Successful i2v gens finish in ~1-2 min when genaipro is healthy, but under
+  // load their queue runs far longer — a 5-min cap made the run give up on jobs
+  // that genaipro then completed anyway (the client sees finished clips in his
+  // genaipro dashboard while the video has none). Tunable, like the TTS/image
+  // waits; the task is never lost either way (the id is persisted → Retry
+  // picks up the finished clip without re-paying).
+  const timeoutMin = Math.max(2, getNumber("VIDEO_TASK_TIMEOUT_MIN", 15));
+  const deadline = Date.now() + timeoutMin * 60 * 1000;
   while (Date.now() < deadline) {
     checkAbort(runId);
     await sleep(6000); // gentle — Veo endpoints share the 30 req/min budget
@@ -402,7 +406,7 @@ async function pollVeoVideo(taskId: string, outFile: string, runId?: string): Pr
     }
     // "processing" → keep polling
   }
-  throw new Error(`GenAIPro video: task ${taskId} timed out after 20 min — press Retry to pick up the finished clip`);
+  throw new Error(`GenAIPro video: task ${taskId} timed out after ${timeoutMin} min — press Retry to pick up the finished clip`);
 }
 
 /**

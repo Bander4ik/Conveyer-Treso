@@ -198,6 +198,12 @@ const GROUPS: Group[] = [
       { key: "STOCK_CONCURRENCY", label: "Parallel stock searches", type: "text" },
       { key: "VIDEO_CONCURRENCY", label: "Parallel AI-video generations", type: "text" },
       {
+        key: "VIDEO_TASK_TIMEOUT_MIN",
+        label: "Max wait per AI video, min",
+        type: "text",
+        hint: "How long to wait for one GenAIPro video clip before giving up on it (that scene then uses an AI image). Their queue can run long — nothing is lost, press Retry and the finished clip is picked up without re-paying. Raise this if you see AI-video clips in your GenAIPro dashboard that never made it into the video.",
+      },
+      {
         key: "VISION_MATCH_MODEL",
         label: "Gemini vision model for relevance (empty = use text model)",
         type: "text",

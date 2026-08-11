@@ -401,6 +401,9 @@ function hitLabel(h: ProviderHit): string {
  * with no key (returns first candidate, score 0 so the caller broadens), but a
  * transient error does NOT bypass the bar.
  */
+/** Vision models that rejected `thinkingConfig` once — don't send it again. */
+const noThinkingConfig = new Set<string>();
+
 async function scoreAndPick(runId: string, sceneIdx: number, query: string, sceneText: string, videoContext: string | undefined, pool: ProviderHit[]): Promise<{ hit: ProviderHit; score: number } | null> {
   if (pool.length === 0) return null;
   if (threshold() <= 0) return { hit: pool[0], score: 100 };
@@ -428,11 +431,32 @@ async function scoreAndPick(runId: string, sceneIdx: number, query: string, scen
 
   try {
     const model = getSetting("VISION_MATCH_MODEL") || getSetting("TEXT_MODEL") || "gemini-2.5-flash";
-    const r = await fetchT(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json", temperature: 0, maxOutputTokens: 2000, thinkingConfig: { thinkingBudget: 0 } } }) },
-      60_000
-    );
+    const call = (withThinkingConfig: boolean) =>
+      fetchT(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              temperature: 0,
+              maxOutputTokens: 2000,
+              ...(withThinkingConfig ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+            },
+          }),
+        },
+        120_000
+      );
+    // Gemini 3.x can't have thinking disabled: `thinkingBudget: 0` returns a
+    // bare 400 INVALID_ARGUMENT. Retry once without it (and remember), or every
+    // scene scores 0 and the whole video degrades to AI images.
+    let r = await call(!noThinkingConfig.has(model));
+    if (r.status === 400 && !noThinkingConfig.has(model)) {
+      noThinkingConfig.add(model);
+      r = await call(false);
+    }
     if (!r.ok) throw new Error(`Gemini ${r.status}`);
     const j = (await r.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
     const text = j.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
